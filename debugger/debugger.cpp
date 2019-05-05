@@ -12,11 +12,53 @@
 #include "linenoise.h"
 #include <string>
 #include <sstream>
+
 /*====================== ALL function prototypes ====================================*/
 std::vector<std::string> split(const std::string &s, char delimiter);
 bool is_prefix(const std::string &s, const std::string &of);
 
 /*====================== main abstract and user-defined data types =========================*/
+
+/*
+	Will use only software breakpoints , by means int 3 that cause give access to breakpoint interrupt handler that in kernel OS (user-kernel switch protection mode) 
+	this interrupt handler return SIGTRAP: set the breakpoint, continue the program, call waipid until SIGTRAP occurs 
+*/
+
+// all real magic happens in enable() and disable()
+class breakpoint {
+public: 
+	breakpoint(pid_t pid, std::intptr_t addr) 
+		: m_pid{pid}, m_addr(addr), m_enabled{false}, m_saved_data{} {}
+	
+	void enable() { 
+		auto data = ptrace(PTRACE_PEEKDATA /* for return instruction from this location in process's address space */, m_pid, m_addr, nullptr);
+		/* need to replace opcode for use the trap to interrupt breakpoint handler */ 
+		m_saved_data = static_cast<uint8_t>(data & 0xff); // opcode   	
+		uint64_t int3 = 0xcc; 
+		uint64_t data_with_int3 = ((data & ~0xff) | int3); // replace opcode 
+		
+		ptrace(PTRACE_POKEDATA/* replace int in process address space */ , m_pid, m_addr, data_with_int3);
+	
+		m_enabled = true;
+	}
+
+	void disable() {
+		auto data = ptrace(PTRACE_PEEKDATA, m_pid, m_addr, nullptr);
+		auto restored_data = ((data & ~0xff) | m_saved_data);
+	  	ptrace(PTRACE_POKEDATA, m_pid, m_addr, restored_data);
+		
+		m_enabled = false;
+	} 
+
+	auto is_enabled() -> bool { return m_enabled; } // badly understand this construction, I think this as bool is_enabled() { return is_enabled } 
+	auto get_address() -> std::intptr_t { return m_addr; } // I think as std::intptr_t get_address() { return m_addr }
+private: 
+	pid_t m_pid;
+	std::intptr_t m_addr; // intptr_t - can think as merely typedef of pointer
+	bool m_enabled;
+	uint8_t m_saved_data; 
+};
+
 class debugger {
 public: 
 	debugger (std::string prog_name, pid_t pid) 
