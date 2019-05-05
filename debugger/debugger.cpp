@@ -6,13 +6,11 @@
 #include <vector>
 #include <cstdint> 
 #include <iostream> 
-#include <array>
-#include <algorithm> 	
 #include <sys/ptrace.h>
 #include "linenoise.h"
 #include <string>
 #include <sstream>
-
+#include <unordered_map> 
 /*====================== ALL function prototypes ====================================*/
 std::vector<std::string> split(const std::string &s, char delimiter);
 bool is_prefix(const std::string &s, const std::string &of);
@@ -63,6 +61,13 @@ class debugger {
 public: 
 	debugger (std::string prog_name, pid_t pid) 
 		: m_prog_name{std::move(prog_name)}, m_pid{pid} {}
+	void set_breakpoint_at_adress(std::intptr_t addr) {
+		std::cout << "Set breakpoint at adress 0x " << std::hex << addr << std::endl;
+		
+		breakpoint bp {m_pid, addr};
+		bp.enable();
+		m_breakpoints[addr] = bp; 
+	}
 
 	void continue_execution() {
 		ptrace(PTRACE_CONT, m_pid, nullptr, nullptr);
@@ -89,8 +94,12 @@ public:
 		auto args = split(line, ' ');
 		auto command = args[0]; 
 			
-		if (is_prefix(command, "continue")) {
+		if (is_prefix(command, "cont")) {
 			continue_execution();
+		}
+		else if(command, "break") {
+			std::string addr {args[1], 2}; // args[1] as copying data in addr, and 2 - the first character that from that copying in the string going on ( because 0x is formal for user ) 
+			set_breakpoint_at_adress(std::stol(addr, 0, 16)); // std::stol for remove whitespaces
 		}
 		else {
 			std::cerr << "Unknown command\n";
@@ -99,6 +108,7 @@ public:
 private:
 	std::string m_prog_name;
 	pid_t m_pid;
+	std::unordered_map<std::intptr_t, breakpoint> m_breakpoints; // structure for breakpoint storage with address(i.e. we have a trap and go to kernel from user-level process) 
 };
 /*=============================== MAIN function ======================================*/
 
@@ -141,5 +151,5 @@ std::vector<std::string> split(const std::string &s /* can be without & because 
 bool is_prefix(const std::string &s, const std::string &of) {
 	if (s.size() != of.size()) return false;
 	return std::equal(s.begin(), s.end(), of.begin());
-}
+}		
 
