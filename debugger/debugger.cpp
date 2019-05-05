@@ -10,7 +10,9 @@
 #include "linenoise.h"
 #include <string>
 #include <sstream>
-#include <unordered_map> 
+#include <unordered_map>
+#include <algorithm> 
+
 /*====================== ALL function prototypes ====================================*/
 std::vector<std::string> split(const std::string &s, char delimiter);
 bool is_prefix(const std::string &s, const std::string &of);
@@ -21,13 +23,63 @@ bool is_prefix(const std::string &s, const std::string &of);
 	Will use only software breakpoints , by means int 3 that cause give access to breakpoint interrupt handler that in kernel OS (user-kernel switch protection mode) 
 	this interrupt handler return SIGTRAP: set the breakpoint, continue the program, call waipid until SIGTRAP occurs 
 */
+		
+/* registers in x86_64 architecture */
 
+enum class reg { 
+	rax/* temp reg */ , rbx	/* callee-saved reg */, rcx, /* 4 th pass int arg for fucnc */
+	rdi, rsi, rbp, rsp,
+    	r8,  r9,  r10, r11, // https://www.uclibc.org/docs/psABI-x86_64.pdf for register's information 
+    	r12, r13, r14, r15,
+    	rip, rflags,    cs,
+    	orig_rax, fs_base,
+    	gs_base,
+    	fs, gs, ss, ds, es
+};
+
+struct reg_descriptor { 
+	reg r; 
+	int dwarf_r; 
+	std::string name; 
+} // as I understand any dwarf register is a usual register but with own dwarf number
+
+const std::array<reg_descriptor, n_registers> g_register_descriptors {{ // for double needed double-brackets  
+	{ reg::r15, 15, "r15" },
+    	{ reg::r14, 14, "r14" },
+    	{ reg::r13, 13, "r13" },
+    	{ reg::r12, 12, "r12" },
+    	{ reg::rbp, 6, "rbp" },
+    	{ reg::rbx, 3, "rbx" },
+    	{ reg::r11, 11, "r11" },
+    	{ reg::r10, 10, "r10" },
+    	{ reg::r9, 9, "r9" },
+    	{ reg::r8, 8, "r8" },
+    	{ reg::rax, 0, "rax" },
+    	{ reg::rcx, 2, "rcx" },
+    	{ reg::rdx, 1, "rdx" },
+    	{ reg::rsi, 4, "rsi" },
+    	{ reg::rdi, 5, "rdi" },
+    	{ reg::orig_rax, -1, "orig_rax" },
+    	{ reg::rip, -1, "rip" },
+    	{ reg::cs, 51, "cs" },
+    	{ reg::rflags, 49, "eflags" },
+    	{ reg::rsp, 7, "rsp" },
+    	{ reg::ss, 52, "ss" },
+    	{ reg::fs_base, 58, "fs_base" },
+   	{ reg::gs_base, 59, "gs_base" },
+    	{ reg::ds, 53, "ds" },
+    	{ reg::es, 50, "es" },
+    	{ reg::fs, 54, "fs" },
+    	{ reg::gs, 55, "gs" },
+}};
+
+
+constexpr std::size_t n_registers = 27; // size_t as unsigned int and constexpr indicate that is merely const 
 // all real magic happens in enable() and disable()
 class breakpoint {
 public: 
 	breakpoint(pid_t pid, std::intptr_t addr) 
 		: m_pid{pid}, m_addr(addr), m_enabled{false}, m_saved_data{} {}
-	
 	void enable() { 
 		auto data = ptrace(PTRACE_PEEKDATA /* for return instruction from this location in process's address space */, m_pid, m_addr, nullptr);
 		/* need to replace opcode for use the trap to interrupt breakpoint handler */ 
@@ -48,14 +100,15 @@ public:
 		m_enabled = false;
 	} 
 
-	auto is_enabled() -> bool { return m_enabled; } // badly understand this construction, I think this as bool is_enabled() { return is_enabled } 
-	auto get_address() -> std::intptr_t { return m_addr; } // I think as std::intptr_t get_address() { return m_addr }
+	auto is_enabled() -> bool { return m_enabled; } // badly understand this construction, I think this as: bool is_enabled() { return is_enabled } 
+	auto get_address() -> std::intptr_t { return m_addr; } // I think this is as: std::intptr_t get_address() { return m_addr }
 private: 
 	pid_t m_pid;
 	std::intptr_t m_addr; // intptr_t - can think as merely typedef of pointer
 	bool m_enabled;
 	uint8_t m_saved_data; 
 };
+
 
 class debugger {
 public: 
@@ -153,3 +206,14 @@ bool is_prefix(const std::string &s, const std::string &of) {
 	return std::equal(s.begin(), s.end(), of.begin());
 }		
 
+/*a bunch of functions to interact with registers (read, write to them, retrieve value from DWARF register number(just as any register but through DWARF number, look up registers by name or dwarf_number)*/
+
+uint64_t get_register_value(pid_t pid, reg r) {
+	user_regs_struct regs; // user_regs_struct is the struct from user.h that hold all x86_64 registers 
+	ptrace(PTRACE_GETREGS, pid, nullptr, &regs); // with ptrace get all process's registers, g_regs_descriptor in the same order as user_regs_descriptor - special for search 
+	
+	/* auto&& means that any value regardless lvalue or rvalue preserve constness for them */
+	auto it = std::find_if(begin(g_regs_descriptor), end(g_regs_descriptor)
+	 
+	
+}
