@@ -11,14 +11,11 @@
 #include <string>
 #include <sstream>
 #include <unordered_map>
-#include <algorithm> 
-
-/*====================== ALL function prototypes ====================================*/
-std::vector<std::string> split(const std::string &s, char delimiter);
-bool is_prefix(const std::string &s, const std::string &of);
+#include <algorithm>
+#include <sys/user.h>
+#include <stdexcept> 
 
 /*====================== main abstract and user-defined data types =========================*/
-
 /*
 	Will use only software breakpoints , by means int 3 that cause give access to breakpoint interrupt handler that in kernel OS (user-kernel switch protection mode) 
 	this interrupt handler return SIGTRAP: set the breakpoint, continue the program, call waipid until SIGTRAP occurs 
@@ -27,7 +24,7 @@ bool is_prefix(const std::string &s, const std::string &of);
 /* registers in x86_64 architecture */
 
 enum class reg { 
-	rax/* temp reg */ , rbx	/* callee-saved reg */, rcx, /* 4 th pass int arg for fucnc */
+	rax/* temp reg */ , rbx	/* callee-saved reg */, rcx /* 4 th pass int arg for fucnc */, rdx, 
 	rdi, rsi, rbp, rsp,
     	r8,  r9,  r10, r11, // https://www.uclibc.org/docs/psABI-x86_64.pdf for register's information 
     	r12, r13, r14, r15,
@@ -41,9 +38,12 @@ struct reg_descriptor {
 	reg r; 
 	int dwarf_r; 
 	std::string name; 
-} // as I understand any dwarf register is a usual register but with own dwarf number
+}; // as I understand any dwarf register is a usual register but with own dwarf number
 
-const std::array<reg_descriptor, n_registers> g_register_descriptors {{ // for double needed double-brackets  
+constexpr std::size_t n_registers = 27; // size_t as unsigned int and constexpr indicate that is merely const 
+
+
+const std::array<reg_descriptor, n_registers> g_register_descriptors {{ // for array needed double-brackets  
 	{ reg::r15, 15, "r15" },
     	{ reg::r14, 14, "r14" },
     	{ reg::r13, 13, "r13" },
@@ -73,8 +73,15 @@ const std::array<reg_descriptor, n_registers> g_register_descriptors {{ // for d
     	{ reg::gs, 55, "gs" },
 }};
 
+/*====================== ALL function prototypes ====================================*/
+std::vector<std::string> split(const std::string &s, char delimiter);
+bool is_prefix(const std::string &s, const std::string &of);
+uint64_t get_register_value(pid_t pid, reg r);
+uint64_t set_register_value(pid_t pid, reg r, uint64_t value);
+uint64_t get_register_value_from_dwarf_register(pid_t pid, unsigned regnum);
+reg get_register_from_name(const std::string& name);
+/* ==================================================================================*/
 
-constexpr std::size_t n_registers = 27; // size_t as unsigned int and constexpr indicate that is merely const 
 // all real magic happens in enable() and disable()
 class breakpoint {
 public: 
@@ -114,6 +121,12 @@ class debugger {
 public: 
 	debugger (std::string prog_name, pid_t pid) 
 		: m_prog_name{std::move(prog_name)}, m_pid{pid} {}
+	
+	// auto& - always will be reference and not temporary (as copy) 
+	void dump_registers() {
+		/* loop iterates over g_register_descriptors and use begin(...), end(...) */
+		for (const auto& rd /* const reference to the deduced type */ : g_registor_descriptors) {
+			std::cout << rd.name << " 0x" << std::setfill('0') << std::hex << std::
 	void set_breakpoint_at_adress(std::intptr_t addr) {
 		std::cout << "Set breakpoint at adress 0x " << std::hex << addr << std::endl;
 		
@@ -151,7 +164,7 @@ public:
 			continue_execution();
 		}
 		else if(command, "break") {
-			std::string addr {args[1], 2}; // args[1] as copying data in addr, and 2 - the first character that from that copying in the string going on ( because 0x is formal for user ) 
+			std::string addr {args[1], 2}; // args[1] as copying data in addr, and 2 - the first character that from that copying in the string going on ( because 0x is formal for user )		 
 			set_breakpoint_at_adress(std::stol(addr, 0, 16)); // std::stol for remove whitespaces
 		}
 		else {
@@ -163,6 +176,9 @@ private:
 	pid_t m_pid;
 	std::unordered_map<std::intptr_t, breakpoint> m_breakpoints; // structure for breakpoint storage with address(i.e. we have a trap and go to kernel from user-level process) 
 };
+
+
+
 /*=============================== MAIN function ======================================*/
 
 int main(int argc, char* argv[]) {
@@ -213,7 +229,44 @@ uint64_t get_register_value(pid_t pid, reg r) {
 	ptrace(PTRACE_GETREGS, pid, nullptr, &regs); // with ptrace get all process's registers, g_regs_descriptor in the same order as user_regs_descriptor - special for search 
 	
 	/* auto&& means that any value regardless lvalue or rvalue preserve constness for them */
-	auto it = std::find_if(begin(g_regs_descriptor), end(g_regs_descriptor)
-	 
+	auto it = std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
+			[r /* capture copy of external r value */ ](auto&& rd /* will be reg from g_register descriptor */) { return rd.r == r; }); 
 	
+	return *(reinterpret_cast<uint64_t*>(&regs) /* pointer on first reg in computer system */ + (it /* adress on needed reg */ - begin(g_register_descriptors))); // get pointer on needed registor 
 }
+
+uint64_t set_register_value(pid_t pid, reg r, uint64_t value) {
+	user_regs_struct regs;
+	ptrace(PTRACE_GETREGS, pid, nullptr, &regs); 
+	auto it = std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
+			[r](auto&& rd){ rd.r == r; });
+	*(reinterpret_cast<uint64_t*>(&regs) + (it - begin(g_register_descriptors))) = value; 
+	
+	ptrace(PTRACE_SETREGS, pid, nullptr, &regs);
+}
+
+
+uint64_t get_register_value_from_dwarf_register(pid_t pid, unsigned regnum) {
+	auto it = std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
+			[regnum](auto&& rd) { return rd.dwarf_r == regnum; }); // it pointer on begin of reg struct
+	if (it == end(g_register_descriptors)) {
+		throw std::out_of_range("Unknown dwarf register"); // create processor exception 
+	}
+	
+	return get_register_value(pid, it->reg);
+}
+
+std::string get_register_name(reg r) {
+	auto it = std::find_if(begin(g_registor_descriptors), end(g_register_descriptors),
+			[r](auto&& it) { return rd.r == r; });
+	
+	return it->name;
+}
+
+reg get_register_from_name(const std::string& name) {
+	auto it = std::find_if(begin(g_register_descriptors), end(g_register_descriptors),
+			[name](auto&& rd){ return rd.name == name; });
+	return it->r;
+}
+
+
